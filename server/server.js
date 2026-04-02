@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import User from './models/User.js';
 import authRoutes from './routes/auth.js';
@@ -10,47 +11,52 @@ import adminRoutes from './routes/admin.js';
 
 dotenv.config();
 
+if (!process.env.JWT_SECRET || !process.env.REFRESH_TOKEN_SECRET) {
+  console.error('FATAL: JWT_SECRET and REFRESH_TOKEN_SECRET must be set in .env');
+  process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT || 5050;
 
-// Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' ? 'https://your-domain.com' : 'http://localhost:5173',
-  credentials: true
+  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  credentials: true, // required for cookies (refresh token)
 }));
 
-// Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
 });
 app.use(limiter);
 
-// Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser()); // parse httpOnly refresh token cookie
 
-// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Create default admin user
 const createDefaultAdmin = async () => {
   try {
     const adminExists = await User.findOne({ role: 'admin' });
     if (!adminExists) {
+      if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) {
+        console.error('FATAL: ADMIN_EMAIL and ADMIN_PASSWORD must be set in .env');
+        process.exit(1);
+      }
       const admin = new User({
-        email: process.env.ADMIN_EMAIL || 'admin@example.com',
-        password: process.env.ADMIN_PASSWORD || 'admin123',
+        email: process.env.ADMIN_EMAIL,
+        password: process.env.ADMIN_PASSWORD,
         role: 'admin',
         twoFactorEnabled: false,
-        isActive: true
+        isActive: true,
+        isEmailVerified: true, // admin doesn't need email verification
       });
       await admin.save();
       console.log('Default admin user created');
@@ -60,7 +66,6 @@ const createDefaultAdmin = async () => {
   }
 };
 
-// Database connection
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB');
@@ -71,13 +76,11 @@ mongoose.connect(process.env.MONGODB_URI)
     process.exit(1);
   });
 
-// Error handling middleware
 app.use((error, req, res, next) => {
   console.error(error.stack);
   res.status(500).json({ message: 'Something went wrong!' });
 });
 
-// 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });

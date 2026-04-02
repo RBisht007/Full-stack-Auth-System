@@ -19,6 +19,18 @@ const userSchema = new mongoose.Schema({
     enum: ['user', 'admin'],
     default: 'user'
   },
+  isEmailVerified: {
+    type: Boolean,
+    default: false
+  },
+  emailVerificationToken: {
+    type: String,
+    required: false
+  },
+  emailVerificationExpires: {
+    type: Date,
+    required: false
+  },
   twoFactorSecret: {
     type: String,
     required: false
@@ -35,37 +47,33 @@ const userSchema = new mongoose.Schema({
     type: Date,
     required: false
   },
+  refreshTokens: {
+    type: [String],
+    default: []
+  },
   lastLogin: {
     type: Date
   },
   isActive: {
     type: Boolean,
     default: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
   }
-});
+}, { timestamps: true });
 
-// Hash password before saving
-userSchema.pre('save', async function(next) {
+userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
-// Compare password method
-userSchema.methods.comparePassword = async function(candidatePassword) {
+userSchema.methods.comparePassword = async function (candidatePassword) {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-// Check if hard token is valid
-userSchema.methods.isHardTokenValid = function(token) {
-  return this.hardToken === token && 
-         this.hardTokenExpires && 
-         this.hardTokenExpires > new Date();
+userSchema.methods.isHardTokenValid = function (token) {
+  return this.hardToken === token &&
+    this.hardTokenExpires &&
+    this.hardTokenExpires > new Date();
 };
 
 export default mongoose.model('User', userSchema);
