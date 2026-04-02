@@ -1,11 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import axios from 'axios';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5050';
+
 interface User {
   id: string;
   email: string;
   role: string;
   twoFactorEnabled: boolean;
+  isEmailVerified?: boolean;
 }
 
 interface AuthContextType {
@@ -15,6 +18,7 @@ interface AuthContextType {
   register: (email: string, password: string) => Promise<any>;
   logout: () => void;
   resetPassword: (email: string, hardToken: string, newPassword: string) => Promise<any>;
+  refreshAccessToken: () => Promise<boolean>;
   loading: boolean;
 }
 
@@ -37,7 +41,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
 
-  // Configure axios defaults
+  // Set axios Authorization header whenever token changes
   useEffect(() => {
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
@@ -46,98 +50,118 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }, [token]);
 
-  // Check if user is authenticated on mount
+  // On mount: verify token via /profile, or try refresh if expired
   useEffect(() => {
     const initAuth = async () => {
       if (token) {
         try {
-          // Verify token by making a request to a protected route
-          const response = await axios.get('http://localhost:5050/api/auth/profile');
+          const response = await axios.get(`${API_URL}/api/auth/profile`);
           setUser(response.data.user);
-          localStorage.setItem('user', JSON.stringify(response.data.user));
-        } catch (error) {
-          // Token is invalid, clear it
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-          setToken(null);
-          setUser(null);
+        } catch (error: any) {
+          if (error.response?.status === 401) {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) clearAuth();
+          } else {
+            clearAuth();
+          }
         }
       }
       setLoading(false);
     };
 
     initAuth();
-  }, [token]);
+  }, []);
 
-  const login = async (email: string, password: string, twoFactorToken?: string) => {
-    try {
-      const response = await axios.post('http://localhost:5050/api/auth/login', {
-        email,
-        password,
-        token: twoFactorToken
-      });
-
-      if (response.data.requiresTwoFactor) {
-        return { requiresTwoFactor: true };
-      }
-
-      const { token: authToken, user: userData } = response.data;
-      
-      localStorage.setItem('token', authToken);
-      localStorage.setItem('user', JSON.stringify(userData));
-      setToken(authToken);
-      setUser(userData);
-
-      return { success: true, user: userData };
-    } catch (error: any) {
-      throw new Error(error.response?.data?.message || 'Login failed');
-    }
-  };
-
-  const register = async (email: string, password: string) => {
-    try {
-      const response = await axios.post('http://localhost:5050/api/auth/register', {
-        email,
-        password
-      });
-      return response.data;
-    } catch (error: any) {
-      throw new Error(error.response?.data?.message || 'Registration failed');
-    }
-  };
-
-  const resetPassword = async (email: string, hardToken: string, newPassword: string) => {
-    try {
-      const response = await axios.post('http://localhost:5050/api/auth/reset-password', {
-        email,
-        hardToken,
-        newPassword
-      });
-      return response.data;
-    } catch (error: any) {
-      throw new Error(error.response?.data?.message || 'Password reset failed');
-    }
-  };
-
-  const logout = () => {
+  const clearAuth = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setToken(null);
     setUser(null);
+    delete axios.defaults.headers.common['Authorization'];
   };
 
-  const value = {
-    user,
-    token,
-    login,
-    register,
-    logout,
-    resetPassword,
-    loading
+  // --- Refresh token ---
+  const refreshAccessToken = async (): Promise<boolean> => {
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/auth/refresh`,
+        {},
+        { withCredentials: true }
+      );
+      const { accessToken, user: userData } = response.data;
+      localStorage.setItem('token', accessToken);
+      localStorage.setItem('user', JSON.stringify(userData));
+      setToken(accessToken);
+      setUser(userData);
+      axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // --- Login ---
+  const login = async (email: string, password: string, twoFactorToken?: string) => {
+    const response = await axios.post(
+      `${API_URL}/api/auth/login`,
+      { email, password, token: twoFactorToken },
+      { withCredentials: true }
+    );
+
+    if (response.data.requiresTwoFactor) {
+      return { requiresTwoFactor: true };
+    }
+
+    const { accessToken, user: userData } = response.data;
+    localStorage.setItem('token', accessToken);
+    localStorage.setItem('user', JSON.stringify(userData));
+    setToken(accessToken);
+    setUser(userData);
+    return { success: true, user: userData };
+  };
+
+  // --- Register ---
+  const register = async (email: string, password: string) => {
+    const response = await axios.post(`${API_URL}/api/auth/register`, {
+      email,
+      password,
+    });
+    return response.data;
+  };
+
+  // --- Password reset via hard token ---
+  const resetPassword = async (email: string, hardToken: string, newPassword: string) => {
+    const response = await axios.post(`${API_URL}/api/auth/reset-password`, {
+      email,
+      hardToken,
+      newPassword,
+    });
+    return response.data;
+  };
+
+  // --- Logout ---
+  const logout = async () => {
+    try {
+      await axios.post(`${API_URL}/api/auth/logout`, {}, { withCredentials: true });
+    } catch {
+      // best-effort — clear client state regardless
+    }
+    clearAuth();
   };
 
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        login,
+        register,
+        logout,
+        resetPassword,
+        refreshAccessToken,
+        loading,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
